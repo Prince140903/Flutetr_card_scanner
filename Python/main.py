@@ -95,6 +95,9 @@ class ScannerSession:
             # Clear history if no detection for a while
             if recent_detections == 0:
                 self.last_detected_corners = None
+                # Reset size tracking if no detection for several frames
+                if len(self.detection_history) == 0 or sum(self.detection_history[-3:]) == 0:
+                    self.card_detector.reset_size_tracking()
             return {
                 "type": "guidance",
                 "card_detected": False,
@@ -218,6 +221,7 @@ class ScannerSession:
         self.last_detected_corners = None
         self.detection_history = []
         self.reset_auto_capture()
+        self.card_detector.reset_size_tracking()
 
 
 def decode_base64_image(base64_string):
@@ -274,11 +278,12 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             # Receive message from client
             data = await websocket.receive_text()
+            print(f"Received message from client: {len(data)} bytes")
             
             try:
                 message = json.loads(data)
             except json.JSONDecodeError as e:
-                print(f"JSON decode error: {e}")
+                print(f"JSON decode error: {e}, Data preview: {data[:100]}")
                 await websocket.send_json({
                     "type": "error",
                     "message": "Invalid JSON format"
@@ -287,6 +292,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             # Handle different message types
             msg_type = message.get("type")
+            print(f"Message type: {msg_type}")
             
             if msg_type == "frame":
                 # Process frame
@@ -314,13 +320,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # Process frame
                 try:
+                    print(f"Processing frame: shape={frame.shape}, mode={mode}")
                     guidance = session.process_frame(frame, mode)
+                    print(f"Sending guidance response: type={guidance.get('type')}, card_detected={guidance.get('card_detected')}")
                     
                     # Send guidance response
                     await websocket.send_json(guidance)
+                    print("Guidance response sent successfully")
                     
                     # Auto-capture if threshold reached
                     if mode == "auto" and session.good_frames_count >= session.auto_capture_threshold:
+                        print(f"Auto-capture triggered: good_frames_count={session.good_frames_count}")
                         capture_result = session.capture_card(frame)
                         await websocket.send_json(capture_result)
                         session.reset_auto_capture()

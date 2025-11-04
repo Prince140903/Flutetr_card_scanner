@@ -1,0 +1,48 @@
+name: id_card_scanner
+description: A Flutter app for scanning ID cards with real-time guidance and image processing.
+
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Camera access
+  camera: ^0.10.5+5
+
+  # Permission handling
+  permission_handler: ^11.0.1
+
+  # State management
+  provider: ^6.1.1
+
+  # WebSocket connection
+  web_socket_channel: ^2.4.0
+
+  # Image manipulation
+  image: ^4.1.3
+
+  # Image cropping
+  crop_your_image: ^1.0.1
+
+  # File path access
+  path_provider: ^2.1.1
+
+  # Save images to gallery
+  gal: ^2.0.1
+
+  # HTTP client (for debugging)
+  http: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

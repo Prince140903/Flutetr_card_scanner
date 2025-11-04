@@ -1,0 +1,12 @@
+﻿// Disable extractDebugAnnotations task to avoid httpclient dependency issues
+gradle.projectsEvaluated {
+    rootProject.allprojects { project ->
+        project.tasks.matching { task ->
+            task.name.contains('extractDebugAnnotations') || 
+            task.name.contains('lint') ||
+            (task.name.contains('Lint') && !task.name.contains('Build'))
+        }.configureEach { task ->
+            task.enabled = false
+        }
+    }
+}
