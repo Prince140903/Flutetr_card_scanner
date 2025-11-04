@@ -91,55 +91,63 @@ class CardDetector:
             if area < min_area or area > max_area:
                 continue
             
-            # Approximate contour to polygon (more lenient epsilon)
+            # Approximate contour to polygon - accept 3-5 vertices for rectangular shapes
             peri = cv2.arcLength(contour, True)
             if peri == 0:
                 continue
             
-            # Try with lenient approximation first (0.04 instead of 0.03)
-            approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+            # Try different epsilon values to get 4 vertices (preferred) or 3-5 (acceptable)
+            approx = None
+            vertex_count = None
+            for epsilon_factor in [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08]:
+                test_approx = cv2.approxPolyDP(contour, epsilon_factor * peri, True)
+                v_count = len(test_approx)
+                if v_count == 4:
+                    # Perfect 4 vertices
+                    approx = test_approx
+                    vertex_count = 4
+                    break
+                elif v_count >= 3 and v_count <= 5 and approx is None:
+                    # Accept 3-5 vertices as backup (will create bounding rect)
+                    approx = test_approx
+                    vertex_count = v_count
             
-            # Allow 3-6 vertices for better detection (was 3-5)
-            if len(approx) < 3 or len(approx) > 6:
+            # Need at least 3 vertices to form a rectangle
+            if approx is None or vertex_count < 3:
                 continue
             
-            # If we have 3-5 vertices, try to refine to 4
-            if len(approx) != 4:
-                # Try with slightly stricter epsilon
-                approx = cv2.approxPolyDP(contour, 0.03 * peri, True)
-                if len(approx) < 4 or len(approx) > 5:
-                    # If still not 4-5, try even more lenient
-                    approx = cv2.approxPolyDP(contour, 0.05 * peri, True)
-                    if len(approx) < 3 or len(approx) > 6:
-                        continue
-            
-            # If we have 3 or 5+ points, we'll create a bounding rectangle
-            if len(approx) != 4:
-                # Create bounding box from the approximation
+            # If we have 4 vertices, validate it's a rectangle before using directly
+            # Otherwise, create a bounding rectangle from 3-5 vertices
+            if vertex_count == 4:
+                # Use the 4 vertices directly
+                corners = approx.reshape(4, 2).astype(np.float32)
+                # Validate it's roughly rectangular (lenient check)
+                # Just check aspect ratio is reasonable, don't reject for slight skew
                 x, y, w, h = cv2.boundingRect(approx)
-                # Create 4 corners from bounding box
-                approx = np.array([
-                    [[x, y]],           # top-left
-                    [[x+w, y]],         # top-right
-                    [[x+w, y+h]],       # bottom-right
-                    [[x, y+h]]          # bottom-left
+                if w == 0 or h == 0:
+                    continue
+            else:
+                # For 3 or 5 vertices, create a bounding rectangle
+                x, y, w, h = cv2.boundingRect(approx)
+                if w == 0 or h == 0:
+                    continue
+                corners = np.array([
+                    [x, y],           # top-left
+                    [x + w, y],       # top-right
+                    [x + w, y + h],   # bottom-right
+                    [x, y + h]        # bottom-left
                 ], dtype=np.float32)
             
-            # Calculate bounding rectangle
-            x, y, w, h = cv2.boundingRect(approx)
-            rect_area = w * h
-            
-            # Check aspect ratio (handle both horizontal and vertical orientations)
+            # Calculate aspect ratio from corners
             aspect_ratio = float(w) / h if h > 0 else 0
             inverse_aspect = float(h) / w if w > 0 else 0
             
-            # Check if aspect ratio matches ID card dimensions (more lenient ranges)
+            # Check if aspect ratio matches ID card dimensions
             is_horizontal = (self.ASPECT_RATIO_MIN <= aspect_ratio <= self.ASPECT_RATIO_MAX)
             is_vertical = (self.VERTICAL_ASPECT_MIN <= inverse_aspect <= self.VERTICAL_ASPECT_MAX)
             
             if is_horizontal or is_vertical:
-                # Reshape to 4x2 array of points
-                corners = approx.reshape(4, 2)
+                # Valid card shape found
                 valid_contours.append((corners, area))
         
         if not valid_contours:

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/websocket_provider.dart';
 import 'screens/camera_screen.dart';
-import 'screens/result_screen.dart';
 
 void main() {
   runApp(const MyApp());

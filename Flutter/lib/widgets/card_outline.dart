@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:ui' as ui;
 
 /// Widget that draws an outline around the detected card corners
 class CardOutline extends CustomPainter {
@@ -47,7 +46,7 @@ class CardOutline extends CustomPainter {
     final paint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 6.0; // Increased from 3.0 for better visibility
+      ..strokeWidth = 8.0; // Increased from 6.0 for even better visibility
 
     canvas.drawPath(path, paint);
 
@@ -57,7 +56,7 @@ class CardOutline extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     for (final point in points) {
-      canvas.drawCircle(point, 15, cornerPaint); // Increased from 8 to 15
+      canvas.drawCircle(point, 20, cornerPaint); // Increased from 15 to 20
     }
   }
 

@@ -140,14 +140,24 @@ class ScannerSession:
             primary_message = "Hold still..."
         
         # Check if ready for capture
-        quality_result = self.quality_validator.validate(frame)
-        ready_to_capture = bool(quality_result['is_valid'])
+        # Use simpler criteria: card detected with stable corners (4 corners = good edges)
+        # Enable capture button when card is detected, even if quality isn't perfect
+        card_has_good_edges = (
+            stable_detection and 
+            card_found and 
+            card_corners is not None and 
+            len(card_corners) == 4
+        )
         
-        # Update auto-capture counter
-        if ready_to_capture and mode == "auto":
+        # Ready to capture if card detected with good edges (user can manually capture)
+        ready_to_capture = card_has_good_edges
+        
+        # Update auto-capture counter (for auto mode, still use quality checks)
+        quality_result = self.quality_validator.validate(frame)
+        if bool(quality_result['is_valid']) and mode == "auto":
             self.good_frames_count += 1
         else:
-            self.reset_auto_capture()
+            self.good_frames_count = max(0, self.good_frames_count - 1)
         
         # Convert card corners to list for JSON serialization
         card_corners_list = None
@@ -170,51 +180,55 @@ class ScannerSession:
     
     def capture_card(self, frame):
         """
-        Capture and warp the card from the frame.
+        Capture and process card from frame.
         
         Args:
-            frame: BGR image frame
+            frame: Input BGR frame
         
         Returns:
-            dict: Capture response with warped image
+            dict: Capture result with warped image or error message
         """
-        # Validate quality first
-        quality_result = self.quality_validator.validate(frame)
+        # Detect card
+        card_found, card_corners = self.card_detector.detect_card(frame)
         
-        if not bool(quality_result['is_valid']):
+        if not card_found or card_corners is None:
             return {
                 "type": "capture",
                 "success": False,
-                "warped_image": None,
-                "message": "Image does not meet quality requirements: " + ", ".join(quality_result['messages'])
+                "message": "Card not detected in frame",
+                "warped_image": None
             }
         
-        # Extract card
-        card_corners = quality_result['card_corners']
-        warped_image = self.warp_transformer.warp_card(frame, card_corners)
-        
-        if warped_image is None:
+        # Always warp/crop the card if detected (even if quality isn't perfect)
+        try:
+            warped = self.warp_transformer.warp_card(frame, card_corners)
+            
+            if warped is None:
+                return {
+                    "type": "capture",
+                    "success": False,
+                    "message": "Failed to warp card image",
+                    "warped_image": None
+                }
+            
+            # Encode warped image to base64
+            _, buffer = cv2.imencode('.jpg', warped, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            warped_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            return {
+                "type": "capture",
+                "success": True,
+                "message": "Card captured successfully",
+                "warped_image": warped_base64
+            }
+        except Exception as e:
+            print(f"Error in capture_card: {e}")
             return {
                 "type": "capture",
                 "success": False,
-                "warped_image": None,
-                "message": "Failed to extract card image"
+                "message": f"Error processing card: {str(e)}",
+                "warped_image": None
             }
-        
-        # Encode warped image to base64
-        # Convert BGR to RGB for JPEG encoding
-        warped_rgb = cv2.cvtColor(warped_image, cv2.COLOR_BGR2RGB)
-        
-        # Encode to JPEG
-        _, buffer = cv2.imencode('.jpg', warped_rgb, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        warped_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        return {
-            "type": "capture",
-            "success": True,
-            "warped_image": warped_base64,
-            "message": "Card captured successfully"
-        }
     
     def reset_tracking(self):
         """Reset all tracking state."""

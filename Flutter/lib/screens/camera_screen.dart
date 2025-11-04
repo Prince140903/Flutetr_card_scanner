@@ -451,11 +451,15 @@ class _CameraScreenState extends State<CameraScreen> {
             right: 0,
             child: Center(
               child: FloatingActionButton.extended(
-                onPressed: provider.isConnected && !provider.isCapturing
+                onPressed: provider.isConnected &&
+                        !provider.isCapturing &&
+                        guidance?.cardCorners != null
                     ? _handleManualCapture
                     : null,
-                backgroundColor: guidance?.readyToCapture == true
-                    ? Colors.green
+                backgroundColor: guidance?.cardCorners != null
+                    ? (guidance?.readyToCapture == true
+                        ? Colors.green
+                        : Colors.orange)
                     : Colors.blue,
                 icon: provider.isCapturing
                     ? const SizedBox(
@@ -509,8 +513,8 @@ class GuideBoxPainter extends CustomPainter {
     // Card aspect ratio (standard ID card: 85.60mm × 53.98mm ≈ 1.586)
     const double cardAspectRatio = 1.586;
 
-    // Calculate guide box dimensions (60% of screen width)
-    final double boxWidth = displaySize.width * 0.6;
+    // Calculate guide box dimensions (75% of screen width - increased for better visibility)
+    final double boxWidth = displaySize.width * 0.75;
     final double boxHeight = boxWidth / cardAspectRatio;
 
     // Center the box
