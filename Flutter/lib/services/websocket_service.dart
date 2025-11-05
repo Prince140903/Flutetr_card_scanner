@@ -93,7 +93,7 @@ class WebSocketService {
     try {
       // Convert image bytes to base64
       final base64Image = base64Encode(imageBytes);
-      final imageSizeKB = (imageBytes.length / 1024).toStringAsFixed(1);
+      // final imageSizeKB = (imageBytes.length / 1024).toStringAsFixed(1);
 
       // Create JSON message
       final message = jsonEncode({

@@ -4,8 +4,6 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import '../models/scan_guidance.dart';
-import '../models/scan_result.dart';
 import '../providers/websocket_provider.dart';
 import '../widgets/guidance_overlay.dart';
 import '../widgets/card_outline.dart';
