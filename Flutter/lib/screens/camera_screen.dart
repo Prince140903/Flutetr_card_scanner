@@ -4,7 +4,8 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import '../providers/websocket_provider.dart';
+import 'package:image/image.dart' as img;
+import '../providers/image_processing_provider.dart';
 import '../widgets/guidance_overlay.dart';
 import '../widgets/card_outline.dart';
 import 'result_screen.dart';
@@ -22,16 +23,17 @@ class _CameraScreenState extends State<CameraScreen> {
   List<CameraDescription> _cameras = [];
   bool _isInitialized = false;
   bool _hasPermission = false;
-  Timer? _frameTimer;
+  StreamSubscription<CameraImage>? _imageStreamSubscription;
   Size? _cameraSize;
   bool _isCapturingFrame = false; // Prevent overlapping captures
   Timer? _captureResultTimer; // Timer to poll for capture results
+  DateTime? _lastFrameProcessTime;
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
-    _initializeWebSocket();
+    _initializeImageProcessing();
   }
 
   Future<void> _initializeCamera() async {
@@ -86,52 +88,126 @@ class _CameraScreenState extends State<CameraScreen> {
           );
         });
 
-        // Start sending frames
-        _startFrameStreaming();
+        // Start camera preview stream
+        _startImageStream();
       }
     } catch (e) {
       print('Error initializing camera: $e');
     }
   }
 
-  Future<void> _initializeWebSocket() async {
-    final provider = Provider.of<WebSocketProvider>(context, listen: false);
-    if (!provider.isConnected) {
-      await provider.initialize();
+  Future<void> _initializeImageProcessing() async {
+    final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
+    await provider.initialize();
+  }
+
+  void _startImageStream() async {
+    _imageStreamSubscription?.cancel();
+
+    // Listen for auto-capture when guidance shows ready
+    final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
+    provider.addListener(_checkAutoCapture);
+
+    // Use preview stream instead of takePicture (much faster, no focus locks)
+    try {
+      await _controller!.startImageStream((CameraImage image) {
+        // Rate limit: process max 1 frame per 1000ms (1 FPS) to reduce lag
+        final now = DateTime.now();
+        if (_lastFrameProcessTime != null) {
+          final timeSinceLastFrame = now.difference(_lastFrameProcessTime!);
+          if (timeSinceLastFrame.inMilliseconds < 1000) {
+            return; // Skip this frame
+          }
+        }
+
+        if (!mounted || _isCapturingFrame || provider.isProcessing) {
+          return;
+        }
+
+        _lastFrameProcessTime = now;
+        // Process in background without blocking
+        _processPreviewFrame(image);
+      });
+    } catch (e) {
+      // Handle error silently
     }
   }
 
-  void _startFrameStreaming() {
-    _frameTimer?.cancel();
+  void _processPreviewFrame(CameraImage image) {
+    // Process in background isolate to avoid blocking UI
+    Future.microtask(() async {
+      try {
+        // Use only Y plane (grayscale) - much faster than full YUV conversion
+        final imageBytes = await _convertCameraImageToGrayscaleJpeg(image);
 
-    // Listen for auto-capture when guidance shows ready
-    final provider = Provider.of<WebSocketProvider>(context, listen: false);
-    provider.addListener(_checkAutoCapture);
+        if (!mounted) return;
 
-    // Send frames at ~5 FPS (200ms interval) to avoid overwhelming the camera
-    _frameTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
-      if (!mounted ||
-          _controller == null ||
-          !_controller!.value.isInitialized) {
-        return;
-      }
-
-      // Only capture if previous capture is done
-      if (!_isCapturingFrame) {
-        _captureAndSendFrame();
+        // Send to local processing (non-blocking)
+        final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
+        provider.sendFrame(imageBytes, mode: 'auto').then((_) {
+          // Check for auto-capture result after processing
+          if (mounted) {
+            final result = provider.lastResult;
+            if (result != null && result.success) {
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(
+                  builder: (context) => ResultScreen(scanResult: result),
+                ),
+              );
+              provider.resetCapture();
+            }
+          }
+        }).catchError((e) {
+          // Silently handle errors
+        });
+      } catch (e) {
+        // Silently handle errors
       }
     });
+  }
+
+  /// Convert CameraImage to grayscale JPEG (much faster - uses only Y plane)
+  Future<Uint8List> _convertCameraImageToGrayscaleJpeg(CameraImage image) async {
+    // Use only Y plane (luminance) - much faster than full YUV conversion
+    // Card detection works fine with grayscale
+    final yPlane = image.planes[0];
+    
+    // Create grayscale image directly from Y plane
+    final convertedImage = img.Image(
+      width: image.width,
+      height: image.height,
+    );
+    
+    // Copy Y plane directly (it's already grayscale)
+    // Process every 2nd pixel for speed, then fill blocks (4x faster)
+    for (var y = 0; y < image.height; y += 2) {
+      for (var x = 0; x < image.width; x += 2) {
+        final index = y * yPlane.bytesPerRow + x;
+        if (index >= yPlane.bytes.length) continue;
+        final gray = yPlane.bytes[index];
+        
+        // Fill 2x2 block for speed
+        convertedImage.setPixelRgba(x, y, gray, gray, gray, 255);
+        if (x + 1 < image.width) convertedImage.setPixelRgba(x + 1, y, gray, gray, gray, 255);
+        if (y + 1 < image.height) convertedImage.setPixelRgba(x, y + 1, gray, gray, gray, 255);
+        if (x + 1 < image.width && y + 1 < image.height) {
+          convertedImage.setPixelRgba(x + 1, y + 1, gray, gray, gray, 255);
+        }
+      }
+    }
+    
+    // Encode to JPEG with lower quality for speed
+    return Uint8List.fromList(img.encodeJpg(convertedImage, quality: 75));
   }
 
   void _checkAutoCapture() {
     if (!mounted) return;
 
-    final provider = Provider.of<WebSocketProvider>(context, listen: false);
+    final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
     final guidance = provider.currentGuidance;
 
     // Check if ready and auto-capture should trigger
     if (guidance?.readyToCapture == true && !provider.isCapturing) {
-      // The backend handles auto-capture
       // Check for result in the frame capture loop
       final result = provider.lastResult;
       if (result != null && result.success && mounted) {
@@ -145,41 +221,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  Future<void> _captureAndSendFrame() async {
-    if (_controller == null ||
-        !_controller!.value.isInitialized ||
-        _isCapturingFrame) return;
-
-    _isCapturingFrame = true;
-    try {
-      final image = await _controller!.takePicture();
-      final imageBytes = await image.readAsBytes();
-
-      // Convert to JPEG format for backend
-      final jpegBytes = await _convertToJpeg(imageBytes);
-
-      // Send to backend
-      final provider = Provider.of<WebSocketProvider>(context, listen: false);
-      if (provider.isConnected) {
-        provider.sendFrame(jpegBytes, mode: 'auto');
-      }
-
-      // Check if we got a capture result (auto-capture from backend)
-      final result = provider.lastResult;
-      if (result != null && result.success && mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ResultScreen(scanResult: result),
-          ),
-        );
-        provider.resetCapture();
-      }
-    } catch (e) {
-      print('Error capturing frame: $e');
-    } finally {
-      _isCapturingFrame = false;
-    }
-  }
 
   Future<Uint8List> _convertToJpeg(Uint8List imageBytes) async {
     // Camera package already provides JPEG, but we ensure it's the right format
@@ -191,7 +232,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
     try {
-      final provider = Provider.of<WebSocketProvider>(context, listen: false);
+      final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
 
       final image = await _controller!.takePicture();
       final imageBytes = await image.readAsBytes();
@@ -200,10 +241,8 @@ class _CameraScreenState extends State<CameraScreen> {
       // Reset any previous result
       provider.resetCapture();
 
-      // Send capture request
-      provider.requestCapture(jpegBytes);
-
-      print('Capture request sent, waiting for result...');
+      // Send capture request (now async)
+      await provider.requestCapture(jpegBytes);
 
       // Poll for result with timeout (5 seconds)
       _captureResultTimer?.cancel();
@@ -219,7 +258,6 @@ class _CameraScreenState extends State<CameraScreen> {
           timer.cancel();
           _captureResultTimer = null;
 
-          print('Capture result received: success=${result.success}');
 
           if (mounted) {
             if (result.success) {
@@ -239,7 +277,6 @@ class _CameraScreenState extends State<CameraScreen> {
         } else if (attempts >= maxAttempts) {
           timer.cancel();
           _captureResultTimer = null;
-          print('Capture timeout - no result received');
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -250,40 +287,44 @@ class _CameraScreenState extends State<CameraScreen> {
         }
       });
     } catch (e) {
-      print('Error capturing image: $e');
       _captureResultTimer?.cancel();
       _captureResultTimer = null;
-      final provider = Provider.of<WebSocketProvider>(context, listen: false);
+      final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
       provider.resetCapture();
-    }
-  }
-
-  void _onCaptureResult() {
-    if (!mounted) return;
-
-    final provider = Provider.of<WebSocketProvider>(context, listen: false);
-    final result = provider.lastResult;
-
-    if (result != null && result.success) {
-      provider.removeListener(_onCaptureResult);
-
-      // Navigate to result screen
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (context) => ResultScreen(
-            scanResult: result,
-          ),
-        ),
-      );
-    } else if (result != null && !result.success) {
-      provider.removeListener(_onCaptureResult);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.message)),
+          SnackBar(content: Text('Capture failed: ${e.toString()}')),
         );
       }
     }
   }
+
+  // void _onCaptureResult() {
+  //   if (!mounted) return;
+
+  //   final provider = Provider.of<WebSocketProvider>(context, listen: false);
+  //   final result = provider.lastResult;
+
+  //   if (result != null && result.success) {
+  //     provider.removeListener(_onCaptureResult);
+
+  //     // Navigate to result screen
+  //     Navigator.of(context).pushReplacement(
+  //       MaterialPageRoute(
+  //         builder: (context) => ResultScreen(
+  //           scanResult: result,
+  //         ),
+  //       ),
+  //     );
+  //   } else if (result != null && !result.success) {
+  //     provider.removeListener(_onCaptureResult);
+  //     if (mounted) {
+  //       ScaffoldMessenger.of(context).showSnackBar(
+  //         SnackBar(content: Text(result.message)),
+  //       );
+  //     }
+  //   }
+  // }
 
   @override
   Widget build(BuildContext context) {
@@ -328,7 +369,7 @@ class _CameraScreenState extends State<CameraScreen> {
       );
     }
 
-    final provider = Provider.of<WebSocketProvider>(context);
+    final provider = Provider.of<ImageProcessingProvider>(context);
     final guidance = provider.currentGuidance;
 
     // Calculate 3:4 aspect ratio dimensions
@@ -424,8 +465,8 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // Connection status
-          if (!provider.isConnected)
+          // Processing status (if error occurs)
+          if (provider.connectionError != null)
             Positioned(
               top: 40,
               left: 0,
@@ -433,10 +474,10 @@ class _CameraScreenState extends State<CameraScreen> {
               child: Container(
                 padding: const EdgeInsets.all(12),
                 color: Colors.red.withOpacity(0.8),
-                child: const Text(
-                  'Not connected to server',
+                child: Text(
+                  provider.connectionError!,
                   textAlign: TextAlign.center,
-                  style: TextStyle(
+                  style: const TextStyle(
                       color: Colors.white, fontWeight: FontWeight.bold),
                 ),
               ),
@@ -449,8 +490,7 @@ class _CameraScreenState extends State<CameraScreen> {
             right: 0,
             child: Center(
               child: FloatingActionButton.extended(
-                onPressed: provider.isConnected &&
-                        !provider.isCapturing &&
+                onPressed: !provider.isCapturing &&
                         guidance?.cardCorners != null
                     ? _handleManualCapture
                     : null,
@@ -484,13 +524,14 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
-    _frameTimer?.cancel();
+    _imageStreamSubscription?.cancel();
+    _controller?.stopImageStream();
     _controller?.dispose();
     _captureResultTimer?.cancel();
 
     // Remove listeners if added
     if (mounted) {
-      final provider = Provider.of<WebSocketProvider>(context, listen: false);
+      final provider = Provider.of<ImageProcessingProvider>(context, listen: false);
       provider.removeListener(_checkAutoCapture);
     }
 

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'providers/websocket_provider.dart';
+import 'providers/image_processing_provider.dart';
 import 'screens/camera_screen.dart';
 
 void main() {
@@ -13,7 +13,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => WebSocketProvider(),
+      create: (_) => ImageProcessingProvider(),
       child: MaterialApp(
         title: 'ID Card Scanner',
         debugShowCheckedModeBanner: false,
