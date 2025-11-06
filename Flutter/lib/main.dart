@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/websocket_provider.dart';
 import 'screens/camera_screen.dart';
+import 'screens/landing_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -25,8 +26,9 @@ class MyApp extends StatelessWidget {
             brightness: Brightness.light,
           ),
         ),
-        home: const CameraScreen(),
+        home: const LandingScreen(),
         routes: {
+          '/landing': (context) => const LandingScreen(),
           '/camera': (context) => const CameraScreen(),
         },
       ),

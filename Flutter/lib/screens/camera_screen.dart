@@ -26,10 +26,12 @@ class _CameraScreenState extends State<CameraScreen> {
   Size? _cameraSize;
   bool _isCapturingFrame = false; // Prevent overlapping captures
   Timer? _captureResultTimer; // Timer to poll for capture results
+  bool _hasNavigatedToResult = false; // Prevent multiple navigations
 
   @override
   void initState() {
     super.initState();
+    _hasNavigatedToResult = false;
     _initializeCamera();
     _initializeWebSocket();
   }
@@ -124,24 +126,26 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   void _checkAutoCapture() {
-    if (!mounted) return;
+    if (!mounted || _hasNavigatedToResult) return;
 
     final provider = Provider.of<WebSocketProvider>(context, listen: false);
-    final guidance = provider.currentGuidance;
-
-    // Check if ready and auto-capture should trigger
-    if (guidance?.readyToCapture == true && !provider.isCapturing) {
-      // The backend handles auto-capture
-      // Check for result in the frame capture loop
-      final result = provider.lastResult;
-      if (result != null && result.success && mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ResultScreen(scanResult: result),
-          ),
-        );
-        provider.resetCapture();
-      }
+    
+    // Check for auto-capture result from backend
+    // Backend automatically captures when quality is good and sends result
+    final result = provider.lastResult;
+    if (result != null && result.success && mounted && !_hasNavigatedToResult) {
+      _hasNavigatedToResult = true;
+      
+      // Provide visual feedback (optional: could add haptic feedback here)
+      print('Auto-capture successful! Navigating to result screen...');
+      
+      // Navigate to result screen
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (context) => ResultScreen(scanResult: result),
+        ),
+      );
+      provider.resetCapture();
     }
   }
 
@@ -158,22 +162,15 @@ class _CameraScreenState extends State<CameraScreen> {
       // Convert to JPEG format for backend
       final jpegBytes = await _convertToJpeg(imageBytes);
 
-      // Send to backend
+      // Send to backend in auto mode
+      // Backend will automatically capture when quality is good
       final provider = Provider.of<WebSocketProvider>(context, listen: false);
       if (provider.isConnected) {
         provider.sendFrame(jpegBytes, mode: 'auto');
       }
-
-      // Check if we got a capture result (auto-capture from backend)
-      final result = provider.lastResult;
-      if (result != null && result.success && mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ResultScreen(scanResult: result),
-          ),
-        );
-        provider.resetCapture();
-      }
+      
+      // Note: Auto-capture result will be handled by _checkAutoCapture listener
+      // which is triggered when provider.notifyListeners() is called
     } catch (e) {
       print('Error capturing frame: $e');
     } finally {
@@ -258,32 +255,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  void _onCaptureResult() {
-    if (!mounted) return;
-
-    final provider = Provider.of<WebSocketProvider>(context, listen: false);
-    final result = provider.lastResult;
-
-    if (result != null && result.success) {
-      provider.removeListener(_onCaptureResult);
-
-      // Navigate to result screen
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (context) => ResultScreen(
-            scanResult: result,
-          ),
-        ),
-      );
-    } else if (result != null && !result.success) {
-      provider.removeListener(_onCaptureResult);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.message)),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {

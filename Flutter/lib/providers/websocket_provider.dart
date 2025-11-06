@@ -120,16 +120,17 @@ class WebSocketProvider with ChangeNotifier {
       return;
     }
 
-    // Parse capture response
+    // Parse capture response (can be from manual or auto-capture)
     final result = _webSocketService.parseCapture(
       message,
       originalImage: _originalImageForCapture,
     );
     if (result != null) {
-      print('WebSocketProvider: Capture result - success: ${result.success}');
+      print('WebSocketProvider: Capture result received - success: ${result.success}, type: ${_isCapturing ? "manual" : "auto"}');
       _lastResult = result;
       _isCapturing = false;
       _originalImageForCapture = null;
+      // Notify listeners so camera screen can check for auto-capture result
       notifyListeners();
       return;
     }
