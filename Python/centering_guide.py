@@ -75,7 +75,9 @@ class CenteringGuide:
             return {
                 'is_centered': bool(True),
                 'message': 'Centered',
-                'status': 'centered'
+                'status': 'centered',
+                'dx': 0.0,
+                'dy': 0.0
             }
         else:
             # Provide directional guidance
@@ -95,6 +97,8 @@ class CenteringGuide:
             return {
                 'is_centered': bool(False),
                 'message': message,
-                'status': 'off_center'
+                'status': 'off_center',
+                'dx': float(dx / frame_width),  # Normalized offset (-1 to 1)
+                'dy': float(dy / frame_height)  # Normalized offset (-1 to 1)
             }
 

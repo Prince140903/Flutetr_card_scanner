@@ -44,15 +44,17 @@ class ScannerSession:
         self.warp_transformer = WarpTransformer()
         self.quality_validator = QualityValidator()
         
-        # Auto-capture state
+        # Auto-capture state - relaxed conditions
         self.good_frames_count = 0
-        self.auto_capture_threshold = 30  # Number of consecutive good frames for auto-capture
+        self.auto_capture_threshold = 5  # Reduced from 30 - capture once card is in frame
         
-        # Tracking state for stability
+        # Tracking state for stability - more lenient for retention
         self.last_detected_corners = None
         self.detection_history = []  # Keep last N detection results
-        self.history_size = 5  # Number of frames to keep in history
-        self.detection_threshold = 3  # Need N detections in history to confirm
+        self.history_size = 10  # Increased from 5 - keep more history
+        self.detection_threshold = 2  # Reduced from 3 - easier to confirm detection
+        self.consecutive_misses = 0  # Track consecutive misses
+        self.max_consecutive_misses = 15  # Allow more misses before losing detection
     
     def reset_auto_capture(self):
         """Reset auto-capture counter."""
@@ -81,23 +83,39 @@ class ScannerSession:
         recent_detections = sum(self.detection_history)
         stable_detection = recent_detections >= self.detection_threshold
         
-        # If we had a detection recently but current frame doesn't detect, use last known corners
-        if not card_found and self.last_detected_corners is not None and recent_detections > 0:
-            # Use last known corners for stability (temporal tracking)
-            card_found = True
-            card_corners = self.last_detected_corners
-        elif card_found:
-            # Update last known good corners
+        # Improved retention logic
+        if card_found:
+            # Successful detection - reset miss counter and update corners
+            self.consecutive_misses = 0
             self.last_detected_corners = card_corners.copy()
+        else:
+            # No detection in this frame
+            self.consecutive_misses += 1
+            
+            # Retention: if we had detection recently, keep using last known corners
+            if self.last_detected_corners is not None:
+                # Check if we should retain detection
+                should_retain = (
+                    recent_detections > 0 or  # Had detections in history
+                    self.consecutive_misses <= self.max_consecutive_misses  # Not too many misses
+                )
+                
+                if should_retain:
+                    # Retain last known corners - don't lose detection immediately
+                    card_found = True
+                    card_corners = self.last_detected_corners
+                    # Consider it stable if we had recent detections
+                    if recent_detections >= 1:
+                        stable_detection = True
         
-        if not stable_detection and not card_found:
+        # Only return "no card" if we truly have no detection and haven't detected recently
+        if not card_found and (recent_detections == 0 or self.consecutive_misses > self.max_consecutive_misses):
             self.reset_auto_capture()
-            # Clear history if no detection for a while
-            if recent_detections == 0:
+            # Clear history if no detection for a long time
+            if self.consecutive_misses > self.max_consecutive_misses:
                 self.last_detected_corners = None
-                # Reset size tracking if no detection for several frames
-                if len(self.detection_history) == 0 or sum(self.detection_history[-3:]) == 0:
-                    self.card_detector.reset_size_tracking()
+                self.detection_history = []
+                self.card_detector.reset_size_tracking()
             return {
                 "type": "guidance",
                 "card_detected": False,
@@ -127,21 +145,40 @@ class ScannerSession:
         glare_acceptable = bool(glare_result['is_acceptable'])
         is_centered = bool(centering_result['is_centered'])
         
-        # Determine primary message (priority order)
-        if distance_result['status'] != 'optimal':
-            primary_message = distance_result['message']
-        elif not is_centered:
-            primary_message = centering_result['message']
-        elif is_blurry:
-            primary_message = "Too blurry"
-        elif not glare_acceptable:
-            primary_message = glare_result['message']
-        else:
-            primary_message = "Hold still..."
+        # Determine primary message with priority - more corrective guidance
+        # Only show critical issues, allow capture even with minor issues
+        primary_message = "Hold still..."
+        show_warning = False
         
-        # Check if ready for capture
-        # Use simpler criteria: card detected with stable corners (4 corners = good edges)
-        # Enable capture button when card is detected, even if quality isn't perfect
+        # Priority 1: Distance (most critical for readability)
+        if distance_result['status'] == 'too_far':
+            primary_message = distance_result['message']
+            show_warning = True
+        elif distance_result['status'] == 'too_close':
+            # Too close is less critical - allow capture
+            if not is_blurry and glare_acceptable:
+                primary_message = "Hold still..."  # Can capture even if slightly too close
+            else:
+                primary_message = distance_result['message']
+                show_warning = True
+        # Priority 2: Severe blur (only if very blurry)
+        elif is_blurry and blur_variance < 20:  # Very blurry
+            primary_message = "Too blurry - hold steady"
+            show_warning = True
+        # Priority 3: Excessive glare (only if severe)
+        elif not glare_acceptable and glare_result.get('glare_percentage', 0) > 0.05:  # More than 5% glare
+            primary_message = glare_result['message']
+            show_warning = True
+        # Priority 4: Centering (least critical - allow slight off-center)
+        elif not is_centered:
+            # Only warn if significantly off-center
+            if abs(centering_result.get('dx', 0)) > 0.2 or abs(centering_result.get('dy', 0)) > 0.2:
+                primary_message = centering_result['message']
+            else:
+                primary_message = "Hold still..."  # Slight off-center is OK
+        
+        # Check if ready for capture - much more lenient
+        # Card just needs to be detected and reasonably positioned
         card_has_good_edges = (
             stable_detection and 
             card_found and 
@@ -149,13 +186,25 @@ class ScannerSession:
             len(card_corners) == 4
         )
         
-        # Ready to capture if card detected with good edges (user can manually capture)
+        # Ready to capture if card detected with good edges
         ready_to_capture = card_has_good_edges
         
-        # Update auto-capture counter (for auto mode, still use quality checks)
-        quality_result = self.quality_validator.validate(frame)
-        if bool(quality_result['is_valid']) and mode == "auto":
-            self.good_frames_count += 1
+        # Update auto-capture counter with relaxed conditions
+        # Only require: card detected, not too far, not severely blurry
+        if mode == "auto" and card_has_good_edges:
+            # Relaxed quality check - don't require perfect conditions
+            is_acceptable_for_capture = (
+                distance_result['status'] != 'too_far' and  # Not too far
+                not (is_blurry and blur_variance < 15) and  # Not severely blurry
+                stable_detection  # Stable detection
+            )
+            
+            if is_acceptable_for_capture:
+                self.good_frames_count += 1
+            else:
+                # Don't reset completely, just slow down progress
+                # Only decrement every other frame if conditions aren't perfect
+                pass  # Keep current count - don't penalize minor issues
         else:
             self.good_frames_count = max(0, self.good_frames_count - 1)
         
@@ -234,6 +283,7 @@ class ScannerSession:
         """Reset all tracking state."""
         self.last_detected_corners = None
         self.detection_history = []
+        self.consecutive_misses = 0
         self.reset_auto_capture()
         self.card_detector.reset_size_tracking()
 

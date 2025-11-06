@@ -82,12 +82,13 @@ class QualityValidator:
         result['is_centered'] = bool(centering_result['is_centered'])
         
         # Determine overall validity (ensure all are Python bools)
-        # Core requirements: card detected, sharp, no excessive glare, optimal distance
+        # Relaxed requirements: card detected, reasonable quality (not perfect)
+        # Allow capture even with minor issues
         result['is_valid'] = bool(
             result['card_detected'] and
-            result['is_sharp'] and
-            result['glare_acceptable'] and
-            result['distance_optimal']
+            result['is_sharp'] and  # Still need sharpness for readability
+            result['distance_optimal']  # Distance is important
+            # Glare and centering are less critical - allow minor issues
         )
         
         if result['is_valid']:
